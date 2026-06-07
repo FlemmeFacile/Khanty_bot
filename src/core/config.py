@@ -18,13 +18,7 @@ logger = logging.getLogger(__name__)
 
 themes_dict: Dict[str, List[Tuple[str, str]]] = {}
 
-# --- Явная загрузка .env ---
-# Путь к .env теперь должен быть относительно корня проекта
-env_path = Path(__file__).parent.parent.parent / '.env'
-load_dotenv(env_path)
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-if not TOKEN:
-    raise ValueError("Не задан TELEGRAM_BOT_TOKEN в .env файле")
+
 
 
 # --- Константы callback_data ---
@@ -208,3 +202,20 @@ def sort_by_russian_translation(themes_dict: dict) -> dict:
             sorted_themes_dict[theme] = []
     
     return sorted_themes_dict
+
+all_themes_list = sorted(set([
+    "Животный мир",
+    "Природа, Погода, Время",
+    "Человек и Семья",
+    "Жилище и Быт",
+    "Охота и Рыбалка",
+    "Еда и Вкусы",
+    "Сказочные существа",
+    "Части тела и Внешность",
+    "Музыка и Музыкальные инструменты",
+    "Чувства и Настроение",
+    "Действия (Что делаем?)",
+    "Какой? Какая? Как? (Признаки)",
+    "Сколько? (Числа и счёт)",
+    "Слова-помощники"
+]))
