@@ -1408,7 +1408,7 @@ async def handle_pos_menu(callback: types.CallbackQuery, state: FSMContext):
             back_button=("🔙 Назад в словарь", CALLBACK_BACK_TO_VOCABULARY),
             columns=2
         )
-        await callback.message.answer("🔤 Выбери часть речи:", reply_markup=keyboard)
+        await callback.message.answer("🔤 Выбери одну из частей речи ниже:", reply_markup=keyboard)
         await callback.answer()
     except Exception as e:
         logger.error(f"Ошибка в handle_pos_menu: {e}")
