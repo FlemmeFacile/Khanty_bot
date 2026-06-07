@@ -2,8 +2,8 @@
 
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardMarkup
-from typing import List, Tuple, Optional, Union
-
+from typing import List, Tuple, Optional, Union, Dict
+from src.core.config import all_themes_list
 # Импорт констант и данных из config
 from src.core.config import (
     CALLBACK_TALES, CALLBACK_VOCABULARY, CALLBACK_GRAMMAR, CALLBACK_LEXICON, 
@@ -18,6 +18,24 @@ from src.core.config import (
 from pathlib import Path
 import os
 import json # Для загрузки alphabet.json
+
+
+
+# Колбэки для лексики по частям речи
+CALLBACK_LEXICON_POS_MENU = "lexicon_pos_menu"          # показ меню частей речи
+CALLBACK_LEXICON_POS_PREFIX = "LXP_SHOW_"               # префикс для показа слов конкретной части речи
+LEXICON_POS_PAGE_PREFIX = "lexicon_pos_page_"           # префикс для пагинации
+ALL_POS_CATEGORIES = [
+    "Существительное",
+    "Глагол",
+    "Прилагательное",
+    "Наречие",
+    "Числительное",
+    "Местоимение",
+    "Служебное"
+]
+
+
 
 # --- Вспомогательная функция для построения меню ---
 def build_menu(buttons: List[Tuple[str, str]], 
@@ -71,16 +89,15 @@ async def main_menu_kb() -> InlineKeyboardMarkup:
     ]
     return build_menu(buttons, columns=2)
 
-
 async def vocabulary_menu_kb() -> InlineKeyboardMarkup:
-    """Меню словаря"""
+    """Меню словаря с отдельными ветками тем и частей речи"""
     buttons = [
         ("📝 Общая грамматика", CALLBACK_GRAMMAR),
-        ("🔤 Общая лексика", CALLBACK_LEXICON),
+        ("📂 Лексика по темам", CALLBACK_LEXICON),          
+        ("🔤 Лексика по частям речи", CALLBACK_LEXICON_POS_MENU), 
         ("🔡 Алфавит", CALLBACK_ALPHABET)
     ]
     return build_menu(buttons, ("🗂️ Главное меню", CALLBACK_BACK_TO_MAIN), columns=2)
-
 
 async def tales_menu_kb(page: int = 0, page_size: int = 5) -> InlineKeyboardMarkup:
     """Меню сказок с пагинацией"""
@@ -196,48 +213,45 @@ async def alphabet_menu_kb() -> InlineKeyboardMarkup:
 
 
 
-async def lexicon_menu_kb(all_themes: List[str], page: int = 0, page_size: int = 6) -> InlineKeyboardMarkup:
-    """ЗАГЛУШКА: Лексика в разработке"""
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🚧 Лексика в разработке", callback_data="lexicon_wip")
-    builder.button(text="🔙 Назад в словарь", callback_data=CALLBACK_BACK_TO_VOCABULARY)
-    builder.adjust(1)
-    return builder.as_markup()
+async def lexicon_menu_kb(all_themes: List[str], page: int = 0, page_size: int = 6,
+                          themes_dict: Optional[Dict[str, list]] = None) -> InlineKeyboardMarkup:
+    """Меню лексики с пагинацией по темам (индексы в callback)"""
+    # Отбираем только темы, для которых есть слова (если передан словарь)
+    if themes_dict:
+        filtered_themes = [t for t in all_themes if themes_dict.get(t)]
+    else:
+        filtered_themes = all_themes
 
+    total_pages = (len(filtered_themes) + page_size - 1) // page_size
+    if page < 0:
+        page = 0
+    elif page >= total_pages:
+        page = total_pages - 1
 
-
-
-'''
-async def lexicon_menu_kb(all_themes: List[str], page: int = 0, page_size: int = 6) -> InlineKeyboardMarkup:
-    """Меню лексики с пагинацией по темам"""
-    
     start_idx = page * page_size
-    end_idx = start_idx + page_size
-    
-    themes_on_page = all_themes[start_idx:end_idx]
-    
-    # Важно: префикс должен совпадать с обработчиком
-    buttons = [(theme, f"LXT_SHOW_{theme}") for theme in themes_on_page]
-    
+    end_idx = min(start_idx + page_size, len(filtered_themes))
+    themes_on_page = filtered_themes[start_idx:end_idx]
+
+    buttons = []
+    for theme in themes_on_page:
+        # Находим глобальный индекс в all_themes (для callback)
+        global_idx = all_themes.index(theme)
+        buttons.append((theme, f"LXT_SHOW_{global_idx}"))
+
     navigation_buttons = []
-    total_pages = (len(all_themes) + page_size - 1) // page_size
-    
     if page > 0:
         navigation_buttons.append(("◀️ Назад", f"lexicon_page_{page-1}"))
-        
-    navigation_buttons.append((f"Страница {page+1}/{total_pages}", "page_indicator")) 
-    
-    if end_idx < len(all_themes):
+    navigation_buttons.append((f"Страница {page+1}/{total_pages}", "page_indicator"))
+    if end_idx < len(filtered_themes):
         navigation_buttons.append(("Вперёд ▶️", f"lexicon_page_{page+1}"))
-    
+
     return build_menu(
-        buttons, 
+        buttons,
         back_button=("🔙 Назад в словарь", CALLBACK_BACK_TO_VOCABULARY),
         additional_buttons=navigation_buttons,
         columns=2
     )
 
-'''
 
 async def get_alphabet_buttons(vowels_only: bool = False, consonants_only: bool = False) -> List[Tuple[str, str]]:
     """Вспомогательная функция для получения кнопок алфавита"""
@@ -247,7 +261,7 @@ async def get_alphabet_buttons(vowels_only: bool = False, consonants_only: bool 
             alphabet_data = json.load(f)
         
         buttons = []
-        VOWELS = {'А', 'Ӑ', 'И', 'О', 'Ө', 'У', 'Ў', 'Ы', 'Э', 'Є', 'Ә'}
+        VOWELS = {'А', 'Ӑ', 'И', 'Й', 'О', 'Ө', 'У', 'Ў', 'Ы', 'Э', 'Є', 'Ә'}
         
         for letter in alphabet_data:
             letter_char = Path(letter['photo']).stem.upper()
