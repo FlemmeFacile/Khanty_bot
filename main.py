@@ -26,16 +26,15 @@ load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # Инициализация Database
-database = Database('user_progress.db')
 
-# Инициализация бота и диспетчера
+dp = Dispatcher()
+
 bot = Bot(
     token=TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
 )
-dp = Dispatcher()
 
-
+database = Database('user_progress.db')
 # Применяем middleware ко всем сообщениям
 dp.message.outer_middleware(DependencyMiddleware(db=database, tales_data=tales_data))
 # Применяем middleware ко всем callback_query
@@ -59,7 +58,7 @@ async def errors_handler(event: types.ErrorEvent):
         event.exception,
         exc_info=True
     )
-    return True
+    return True # Возвращаем True, чтобы aiogram знал, что ошибка обработана
 
 # --- Запуск бота ---
 async def main():
@@ -77,7 +76,8 @@ async def main():
         logger.critical(f"Ошибка при запуске бота: {e}")
     finally:
         logger.info("Бот остановлен")
-
+        # В aiogram 3.x явное закрытие сессии не требуется, но вы можете добавить:
+        # await bot.session.close()
 
 
 if __name__ == "__main__":
