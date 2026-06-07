@@ -5,7 +5,7 @@ from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
-
+from src.core.config import all_themes_list
 from src.core.config import logger, CALLBACK_BACK_TO_MAIN
 from src.utils.keyboards import main_menu_kb
 from src.db.database import Database
