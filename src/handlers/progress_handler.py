@@ -8,7 +8,7 @@ from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-
+from src.core.config import all_themes_list
 from src.core.config import logger, CALLBACK_BACK_TO_MAIN, tales_data, CALLBACK_PROGRESS
 from src.db.database import Database
 
