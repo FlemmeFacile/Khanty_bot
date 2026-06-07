@@ -18,12 +18,16 @@ from aiogram.types import InputMediaPhoto, InlineKeyboardButton
 import tempfile
 import os
 from aiogram.types import InlineKeyboardMarkup
-
-
+from src.core.config import all_themes_list
+from src.services.classifier import PosTagger
 import asyncio
 from aiogram import Router, types, F
 from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
+from collections import defaultdict
+from src.services.classifier import PosTagger
+from src.utils.keyboards import ALL_POS_CATEGORIES, CALLBACK_LEXICON_POS_MENU, CALLBACK_LEXICON_POS_PREFIX, LEXICON_POS_PAGE_PREFIX
+
 
 
 # Импорт из модулей проекта
@@ -54,6 +58,23 @@ from src.services.classifier import hybrid_classifier
 # --- Роутер ---
 router = Router()
 
+
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+MANUAL_POS_FILE = BASE_DIR / 'manual_pos.json'
+manual_pos_corrections = {}
+if MANUAL_POS_FILE.exists():
+    with open(MANUAL_POS_FILE, 'r', encoding='utf-8') as f:
+        manual_pos_corrections = json.load(f)
+    logger.info(f"Загружено ручных исправлений частей речи: {len(manual_pos_corrections)}")
+else:
+    logger.warning(f"Файл {MANUAL_POS_FILE} не найден, ручные исправления отключены")
+
+
+
+
+    
 # --- Обработчики навигации ---
 @router.callback_query(F.data == CALLBACK_TALES)
 async def handle_tales_menu(callback: types.CallbackQuery):
@@ -307,7 +328,30 @@ async def handle_illustr_nav(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("⚠️ Ошибка при переключении иллюстраций", show_alert=True)
 
 
+def build_pos_index(themes_dict: Dict[str, List[Tuple[str, str]]]) -> Dict[str, List[Tuple[str, str]]]:
+    """Строит словарь {часть_речи: [(хант, рус), ...]} без дубликатов"""
+    pos_index = defaultdict(list)
+    seen_pairs_by_pos = defaultdict(set)
 
+    for word_pairs in themes_dict.values():
+        for han, rus in word_pairs:
+            han_clean = han.strip().lower()
+            rus_clean = rus.strip().lower()
+            normalized_pair = (han_clean, rus_clean)
+
+            # Определяем часть речи
+            pos = PosTagger.get_pos(rus_clean)
+            # --- ПРИМЕНЯЕМ РУЧНЫЕ ИСПРАВЛЕНИЯ ---
+            if rus_clean in manual_pos_corrections:
+                pos = manual_pos_corrections[rus_clean]
+
+            if normalized_pair not in seen_pairs_by_pos[pos]:
+                seen_pairs_by_pos[pos].add(normalized_pair)
+                pos_index[pos].append((han.strip(), rus.strip()))
+
+    for pos in pos_index:
+        pos_index[pos].sort(key=lambda x: x[0].lower())
+    return pos_index
 
 
 @router.callback_query(F.data.startswith(CALLBACK_SHOW_CULTURE))
@@ -561,10 +605,14 @@ async def handle_vocabulary(callback: types.CallbackQuery):
             " • Сколько чисел в хантыйском и как они образуются,\n "
             " • Какие есть падежные суффиксы,\n"
             " • Как ласково сказать белочка или рыбка.\n\n"
-            "В <b>🔤 Общей лексике</b> сможешь узнать слова из разных категорий:\n"
+            "В <b>📁 Лексике по темам</b> сможешь узнать слова из разных категорий:\n"
             " • Еда,\n"
             " • Животные,\n"
             " • Природа и другие.\n\n"
+            "В <b>🔤 Лексике по частям речи</b> слова разделены по категориям для более простого поиска:\n"
+            " • Существительное,\n"
+            " • Местоимение,\n"
+            " • Числительное и другие.\n\n"
             "В <b>🔡 Алфавите</b> можешь увидеть:\n"
             " • Названия букв\n"
             " • Гласные звуки\n"
@@ -619,85 +667,84 @@ async def handle_general_grammar(callback: types.CallbackQuery):
 async def handle_lexicon_first(callback: types.CallbackQuery, state: FSMContext):
     """Первый вход в меню лексики — создает новое сообщение"""
     try:
-        themes_dict = defaultdict(list)
-        has_lexicon = False
+        # Инициализируем themes_dict всеми темами из глобального списка
+        themes_dict = {theme: [] for theme in all_themes_list}
         stats = {'manual': 0, 'neural': 0}
-
-        seen_pairs_by_theme = defaultdict(set)
+        seen_pairs_by_theme = {theme: set() for theme in all_themes_list}
 
         for story in tales_data['stories']:
-            if (story.get('han_words') and story.get('rus_words') and
+            if not (story.get('han_words') and story.get('rus_words') and
                     len(story['han_words']) > 0 and len(story['rus_words']) > 0):
-                has_lexicon = True
-                
-                han_words = [w.strip() for w in story['han_words']]
-                rus_words = [w.strip() for w in story['rus_words']]
-                
-                min_length = min(len(han_words), len(rus_words))
-                
-                for i in range(min_length):
-                    han_word = han_words[i]
-                    rus_word = rus_words[i]
-                    
-                    if not han_word or not rus_word:
-                        continue
-                    
-                    # Статистика
-                    rus_lower = rus_word.lower().strip()
-                    if rus_lower in manual_dictionary:
-                        stats['manual'] += 1
-                    else:
-                        stats['neural'] += 1
-                    
-                    themes = hybrid_classifier.predict_themes(rus_word)
-                    
-                    for theme in themes:
-                        pair_key = (han_word, rus_word)
-                        
-                        if pair_key not in seen_pairs_by_theme[theme]:
-                            themes_dict[theme].append((han_word, rus_word))
-                            seen_pairs_by_theme[theme].add(pair_key)
+                continue
 
-        if not has_lexicon:
+            han_words = [w.strip() for w in story['han_words']]
+            rus_words = [w.strip() for w in story['rus_words']]
+            min_len = min(len(han_words), len(rus_words))
+
+            for i in range(min_len):
+                han_word = han_words[i]
+                rus_word = rus_words[i]
+                if not han_word or not rus_word:
+                    continue
+
+                rus_lower = rus_word.lower().strip()
+                if rus_lower in manual_dictionary:
+                    stats['manual'] += 1
+                else:
+                    stats['neural'] += 1
+
+                themes = hybrid_classifier.predict_themes(rus_word)
+                for theme in themes:
+                    if theme not in themes_dict:
+                        continue  # Игнорируем неизвестные темы
+                    pair = (han_word, rus_word)
+                    if pair not in seen_pairs_by_theme[theme]:
+                        themes_dict[theme].append(pair)
+                        seen_pairs_by_theme[theme].add(pair)
+
+        # Удаляем пустые темы? Лучше оставить все, но в меню показывать только непустые
+        # Для клавиатуры будем фильтровать на лету
+        non_empty_themes = [theme for theme in all_themes_list if themes_dict[theme]]
+        if not non_empty_themes:
             await callback.answer("❌ В словаре нет доступной лексики", show_alert=True)
             return
 
-        logger.info(f"Классификация: {stats['manual']} слов из ручного словаря, {stats['neural']} слов нейросетью")
-
-        # Удаляем пустые темы
-        themes_dict = {k: v for k, v in themes_dict.items() if v}
-        
-        # --- ВАРИАНТ 1: Сортировка по хантыйскому алфавиту ---
+        # Сортируем слова внутри каждой темы
         themes_dict = sort_khanty_words_in_themes(themes_dict)
-        
-        # --- ВАРИАНТ 2: ИЛИ сортировка по русскому переводу  ---
-        # themes_dict = sort_by_russian_translation(themes_dict)
-        
-        logger.info(f"Темы распределены: {len(themes_dict)} тем, уникальных пар: {sum(len(v) for v in themes_dict.values())}")
 
-        sorted_themes = sorted(themes_dict.keys(),
-                               key=lambda x: (
-                                   -len(themes_dict[x]),  # По количеству слов (убывание)
-                                   x.lower()              # По алфавиту (если количество одинаковое)
-                               ))
+        logger.info(f"Классификация: {stats['manual']} слов из ручного словаря, {stats['neural']} слов нейросетью")
+        logger.info(f"Темы распределены: {len(non_empty_themes)} непустых тем, всего пар: {sum(len(v) for v in themes_dict.values())}")
 
+        # Сохраняем полный словарь тем и список непустых (или используем all_themes_list прямо в клавиатуре)
         await state.update_data({
-            'themes_dict': themes_dict,  # Уже отсортированный словарь
-            'all_themes': sorted_themes,
+            'themes_dict': themes_dict,
             'lexicon_page': 0
         })
 
         message = await callback.message.answer(
             "📚 Выбери тематику словаря. Слова внутри каждой темы расположены в алфавитном порядке.\n\n"
             "Воспользуйся кнопками <b>Вперёд ▶️</b> и <b>◀️ Назад</b> для перехода по меню:",
-            reply_markup=await lexicon_menu_kb(sorted_themes, 0)
+            reply_markup=await lexicon_menu_kb(all_themes_list, 0, themes_dict=themes_dict)
         )
         await state.update_data({'lexicon_message_id': message.message_id})
         await callback.answer()
-        
+
     except Exception as e:
         logger.error(f"Ошибка в handle_lexicon_first: {e}", exc_info=True)
         await callback.answer("⚠️ Ошибка при загрузке словаря", show_alert=True)
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 async def handle_lexicon_return_to_themes(callback: types.CallbackQuery, state: FSMContext):
     """Возвращает из просмотра слов конкретной темы обратно в меню тем лексики."""
@@ -740,53 +787,58 @@ async def handle_lexicon_return_to_themes(callback: types.CallbackQuery, state: 
         logger.error(f"Ошибка в handle_lexicon_return_to_themes: {e}")
         await callback.answer("⚠️ Ошибка при возврате в меню", show_alert=True)
 
+
+
+
+
+
+
+
 @router.callback_query(F.data.startswith("lexicon_page_"))
 async def handle_lexicon_pagination(callback: types.CallbackQuery, state: FSMContext):
-    """Обрабатывает пагинацию в меню тем лексики (кнопки Назад/Вперёд)."""
+    """Пагинация по темам (использует глобальный all_themes_list)"""
     try:
-        # 1. Извлекаем номер новой страницы
         new_page = int(callback.data.replace("lexicon_page_", ""))
-        
-        # 2. Получаем данные
+
+        page_size = 6
+        total_pages = (len(all_themes_list) + page_size - 1) // page_size
+        # Нормализация
+        if new_page < 0:
+            new_page = 0
+        elif new_page >= total_pages:
+            new_page = total_pages - 1
+
         data = await state.get_data()
-        all_themes = data.get('all_themes', [])
-        message_id = data.get('lexicon_message_id') 
-        current_page = data.get('lexicon_page', 0) # Читаем текущую страницу
-        
-        if not all_themes or message_id is None:
-            await callback.answer("⚠️ Ошибка: Тематика не загружена.", show_alert=True)
-            return
-            
-        # 3. ПРОВЕРКА: Если новая страница совпадает с текущей, ничего не делаем
-        if new_page == current_page:
-            await callback.answer("Вы уже на этой странице.")
+        message_id = data.get('lexicon_message_id')
+        if not message_id:
+            await callback.answer("Ошибка: не найден идентификатор сообщения", show_alert=True)
             return
 
-        # 4. Обновляем страницу в состоянии (только если она изменилась)
         await state.update_data({'lexicon_page': new_page})
+        new_keyboard = await lexicon_menu_kb(all_themes_list, new_page)
 
-        # 5. Генерируем новую клавиатуру (она будет содержать новые callback_data)
-        new_keyboard = await lexicon_menu_kb(all_themes, new_page)
-        
-        # 6. Редактируем сообщение по сохраненному ID
         try:
             await callback.bot.edit_message_reply_markup(
                 chat_id=callback.message.chat.id,
-                message_id=message_id, 
+                message_id=message_id,
                 reply_markup=new_keyboard
             )
         except AiogramError as e:
             if 'message is not modified' not in str(e):
-                raise e 
-            logger.info("Попытка отредактировать сообщение с тем же контентом, игнорируем (пагинация).")
-
-        await callback.answer() 
-        
+                raise e
+        await callback.answer()
     except Exception as e:
         logger.error(f"Ошибка в handle_lexicon_pagination: {e}")
         await callback.answer("⚠️ Ошибка при переключении страницы", show_alert=True)
 
 
+
+
+
+
+
+
+'''
 @router.callback_query(F.data.startswith("show_lexicon_theme_"))
 async def handle_show_lexicon_theme(callback: types.CallbackQuery, state: FSMContext):
     """Показ слов по выбранной теме"""
@@ -829,83 +881,10 @@ async def handle_show_lexicon_theme(callback: types.CallbackQuery, state: FSMCon
         logger.error(f"Ошибка в handle_show_lexicon_theme: {e}")
         await callback.answer("⚠️ Ошибка при загрузке темы", show_alert=True)
 
-
-@router.callback_query(F.data.startswith("lexicon_return_to_page_"))
-async def handle_lexicon_return_to_themes(callback: types.CallbackQuery, state: FSMContext):
-    """Возврат к списку тем лексики с указанной страницы"""
-    try:
-        page = int(callback.data.replace("lexicon_return_to_page_", ""))
-        data = await state.get_data()
-        all_themes = data.get('all_themes', [])
-        
-        if not all_themes:
-            await callback.answer("⚠️ Ошибка: Тематика не загружена. Вернитесь в Словарик.", show_alert=True)
-            return
-            
-        # Обновляем страницу в состоянии
-        await state.update_data({'lexicon_page': page})
-
-        text = "📚 Выбери тематику словаря. Воспользуйся кнопками <b>Вперёд ▶️</b> и <b>◀️ Назад</b> для перехода по меню:"
-        
-        # Отправляем новое сообщение
-        message = await callback.message.answer(
-            text,
-            reply_markup=await lexicon_menu_kb(all_themes, page),
-            parse_mode=ParseMode.HTML
-        )
-        
-        # Сохраняем ID нового сообщения
-        await state.update_data({'lexicon_message_id': message.message_id})
-
-        await callback.answer()
-        
-    except Exception as e:
-        logger.error(f"Ошибка в handle_lexicon_return_to_themes: {e}")
-        await callback.answer("⚠️ Ошибка при возврате к темам", show_alert=True)
+'''
 
 
 
-
-@router.callback_query(F.data.startswith("lexicon_page_"))
-async def handle_lexicon_pagination(callback: types.CallbackQuery, state: FSMContext):
-    """Обрабатывает пагинацию в меню тем лексики (кнопки Назад/Вперёд)."""
-    try:
-        # 1. Извлекаем номер новой страницы из callback_data
-        new_page_str = callback.data.replace("lexicon_page_", "")
-        new_page = int(new_page_str)
-        
-        # 2. Получаем данные из состояния
-        data = await state.get_data()
-        all_themes = data.get('all_themes', [])
-        message_id = data.get('lexicon_message_id') 
-        
-        if not all_themes or message_id is None:
-            await callback.answer("⚠️ Ошибка: Тематика не загружена. Вернитесь в Словарь.", show_alert=True)
-            return
-
-        # 3. Обновляем страницу в состоянии
-        await state.update_data({'lexicon_page': new_page})
-
-        # 4. Генерируем новую клавиатуру для новой страницы
-        new_keyboard = await lexicon_menu_kb(all_themes, new_page)
-        
-        # 5. Редактируем сообщение с обработкой ошибки "message is not modified"
-        try:
-            await callback.bot.edit_message_reply_markup(
-                chat_id=callback.message.chat.id,
-                message_id=message_id, 
-                reply_markup=new_keyboard
-            )
-        except AiogramError as e:
-            if 'message is not modified' not in str(e):
-                raise e 
-            logger.info("Попытка отредактировать сообщение с тем же контентом, игнорируем (пагинация).")
-
-        await callback.answer() # Обязательно отвечаем на колбэк
-        
-    except Exception as e:
-        logger.error(f"Ошибка в handle_lexicon_pagination: {e}")
-        await callback.answer("⚠️ Ошибка при переключении страницы", show_alert=True)
 
 
 @router.callback_query(F.data == CALLBACK_BACK_TO_VOCABULARY)
@@ -918,10 +897,14 @@ async def handle_back_to_vocabulary(callback: types.CallbackQuery):
             " • Сколько чисел в хантыйском и как они образуются,\n "
             " • Какие есть падежные суффиксы,\n"
             " • Как ласково сказать белочка или рыбка.\n\n"
-            "В <b>🔤 Общей лексике</b> сможешь узнать слова из разных категорий:\n"
+            "В <b>📁 Лексике по темам</b> сможешь узнать слова из разных категорий:\n"
             " • Еда,\n"
             " • Животные,\n"
             " • Природа и другие.\n\n"
+            "В <b>🔤 Лексике по частям речи</b> слова разделены по категориям для более простого поиска:\n"
+            " • Существительное,\n"
+            " • Местоимение,\n"
+            " • Числительное и другие.\n\n"
             "В <b>🔡 Алфавите</b> можешь увидеть:\n"
             " • Названия букв\n"
             " • Гласные звуки\n"
@@ -936,65 +919,70 @@ async def handle_back_to_vocabulary(callback: types.CallbackQuery):
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
 @router.callback_query(F.data.startswith("LXT_SHOW_"))
 async def handle_show_lexicon_theme(callback: types.CallbackQuery, state: FSMContext):
-    """Показ слов по выбранной теме"""
+    """Показ слов по выбранной теме (индекс из глобального списка)"""
     try:
-        theme = callback.data.replace("LXT_SHOW_", "") 
+        theme_idx = int(callback.data.split("_")[-1])
+        if theme_idx < 0 or theme_idx >= len(all_themes_list):
+            await callback.answer("Тема не найдена", show_alert=True)
+            return
+        theme = all_themes_list[theme_idx]
+
         data = await state.get_data()
         themes_dict = data.get('themes_dict', {})
-        current_page = data.get('lexicon_page', 0)
-        
-        words = themes_dict.get(theme)
-        
+        words = themes_dict.get(theme, [])
+
         if not words:
             await callback.answer(f"❌ Слов по теме '{theme}' не найдено.", show_alert=True)
             return
 
-        # Собираем список слов
         lexicon_list = ""
         for han_word, rus_word in words:
             lexicon_list += f"• <b>{han_word}</b> — {rus_word}\n"
-            
-        header = f"🔤 <b>Словарь по теме: {theme}</b> (Всего: {len(words)})\n\n"
-        
-        # Полный текст для отправки
-        full_text = header + lexicon_list
-        
-        # Разбиваем текст на части с учетом лимита Telegram
+
+        full_text = f"🔤 <b>Словарь по теме: {theme}</b> (Всего: {len(words)})\n\n{lexicon_list}"
         parts = await split_long_message(full_text, max_length=4000)
-        
-        # Кнопка возврата к списку тем
+
+        current_page = data.get('lexicon_page', 0)
         back_button = ("🔙 Назад к темам", f"lexicon_return_to_page_{current_page}")
-        
-        # Отправляем все части сообщения
+
         for i, part in enumerate(parts):
             if i == 0 and len(parts) == 1:
-                # Если это единственная часть, отправляем с кнопкой возврата
-                await callback.message.answer(
-                    part, 
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=build_menu([], back_button=back_button)
-                )
+                await callback.message.answer(part, parse_mode=ParseMode.HTML,
+                                             reply_markup=build_menu([], back_button=back_button))
             elif i == 0:
-                # Если это первая часть из нескольких, отправляем без кнопки
                 await callback.message.answer(part, parse_mode=ParseMode.HTML)
             else:
-                # Остальные части без кнопки
                 await callback.message.answer(part, parse_mode=ParseMode.HTML)
-        
-        # Если было несколько частей, добавляем кнопку после последней
+
         if len(parts) > 1:
-            await callback.message.answer(
-                "Выбери действие:",
-                reply_markup=build_menu([], back_button=back_button)
-            )
-        
+            await callback.message.answer("Выбери действие:",
+                                         reply_markup=build_menu([], back_button=back_button))
         await callback.answer()
-        
     except Exception as e:
-        logger.error(f"Ошибка в handle_show_lexicon_theme для темы '{theme}': {e}", exc_info=True)
+        logger.error(f"Ошибка в handle_show_lexicon_theme: {e}", exc_info=True)
         await callback.answer("⚠️ Ошибка при загрузке темы", show_alert=True)
+
+
+
+
+
+
+
+
 
 
 
@@ -1349,44 +1337,117 @@ async def handle_other(message: types.Message):
 
 
 @router.callback_query(F.data.startswith("lexicon_return_to_page_"))
-async def handle_lexicon_return_to_themes(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
-    """Возвращает к списку тем, редактируя или создавая сообщение"""
+async def handle_lexicon_return_to_themes(callback: types.CallbackQuery, state: FSMContext):
+    """Возврат к списку тем — всегда отправляет новое сообщение"""
     try:
         page = int(callback.data.replace("lexicon_return_to_page_", ""))
         data = await state.get_data()
-        all_themes = data.get('all_themes', [])
-        message_id = data.get('lexicon_message_id')
-        
-        if not all_themes:
-             await callback.answer("⚠️ Ошибка: Тематика не загружена. Вернитесь в Словарик.", show_alert=True)
-             return
-             
-        # Обновляем страницу в состоянии
-        await state.update_data({'lexicon_page': page})
+        themes_dict = data.get('themes_dict', {})
+
+        # Нормализация страницы
+        total_pages = (len(all_themes_list) + 6 - 1) // 6
+        page = max(0, min(page, total_pages - 1))
 
         text = "📚 Выбери тематику словаря. Воспользуйся кнопками <b>Вперёд ▶️</b> и <b>◀️ Назад</b> для перехода по меню:"
-        reply_markup = await lexicon_menu_kb(all_themes, page)
+        reply_markup = await lexicon_menu_kb(all_themes_list, page, themes_dict=themes_dict)
+
+        # Отправляем НОВОЕ сообщение
+        msg = await callback.message.answer(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
         
-        if message_id and callback.message.message_id == message_id:
-             # Если ID сообщения совпадает, редактируем текущее
-             await callback.bot.edit_message_text(
-                chat_id=callback.message.chat.id,
-                message_id=message_id,
-                text=text,
-                reply_markup=reply_markup,
-                parse_mode=ParseMode.HTML
-            )
-        else:
-             # Если сообщение другое или ID потерян, отправляем новое
-             message = await callback.message.answer(
-                text,
-                reply_markup=reply_markup,
-                parse_mode=ParseMode.HTML
-            )
-             # Сохраняем ID нового сообщения
-             await state.update_data({'lexicon_message_id': message.message_id})
+        # Обновляем ID сообщения в состоянии, чтобы пагинация работала с новым сообщением
+        await state.update_data({
+            'lexicon_message_id': msg.message_id,
+            'lexicon_page': page
+        })
 
         await callback.answer()
     except Exception as e:
         logger.error(f"Ошибка в handle_lexicon_return_to_themes: {e}")
         await callback.answer("⚠️ Ошибка при возврате к темам", show_alert=True)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+@router.callback_query(F.data == CALLBACK_LEXICON_POS_MENU)
+async def handle_pos_menu(callback: types.CallbackQuery, state: FSMContext):
+    """Показывает меню выбора части речи"""
+    try:
+        data = await state.get_data()
+        themes_dict = data.get('themes_dict', {})
+        if not themes_dict:
+            await callback.answer("❌ Сначала откройте лексику по темам для загрузки словаря", show_alert=True)
+            return
+
+        # Строим индекс и сохраняем в состоянии (кэшируем)
+        pos_index = build_pos_index(themes_dict)
+        await state.update_data({'pos_index': pos_index})
+
+        # Показываем только те категории, в которых есть слова
+        available_pos = [pos for pos in ALL_POS_CATEGORIES if pos_index.get(pos)]
+        if not available_pos:
+            await callback.answer("⚠️ Нет слов ни для одной части речи", show_alert=True)
+            return
+
+        # Кнопки выбора части речи (все влезут на одну страницу)
+        buttons = [(pos, f"{CALLBACK_LEXICON_POS_PREFIX}{pos}") for pos in available_pos]
+        keyboard = build_menu(
+            buttons,
+            back_button=("🔙 Назад в словарь", CALLBACK_BACK_TO_VOCABULARY),
+            columns=2
+        )
+        await callback.message.answer("🔤 Выбери часть речи:", reply_markup=keyboard)
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в handle_pos_menu: {e}")
+        await callback.answer("⚠️ Ошибка при загрузке частей речи", show_alert=True)
+
+
+
+
+
+
+@router.callback_query(F.data.startswith(CALLBACK_LEXICON_POS_PREFIX))
+async def handle_show_words_by_pos(callback: types.CallbackQuery, state: FSMContext):
+    """Показ слов по выбранной части речи"""
+    try:
+        pos = callback.data.replace(CALLBACK_LEXICON_POS_PREFIX, "")
+        data = await state.get_data()
+        pos_index = data.get('pos_index', {})
+        words = pos_index.get(pos, [])
+        if not words:
+            await callback.answer(f"Слов с частью речи '{pos}' не найдено", show_alert=True)
+            return
+
+        lexicon_list = ""
+        for han_word, rus_word in words:
+            lexicon_list += f"• <b>{han_word}</b> — {rus_word}\n"
+        full_text = f"🔤 <b>Словарь: {pos}</b> (Всего: {len(words)})\n\n{lexicon_list}"
+        parts = await split_long_message(full_text, max_length=4000)
+
+        back_button = ("🔙 К частям речи", CALLBACK_LEXICON_POS_MENU)
+        for i, part in enumerate(parts):
+            if i == 0 and len(parts) == 1:
+                await callback.message.answer(part, parse_mode=ParseMode.HTML,
+                                             reply_markup=build_menu([], back_button=back_button))
+            else:
+                await callback.message.answer(part, parse_mode=ParseMode.HTML)
+        if len(parts) > 1:
+            await callback.message.answer("Выбери действие:",
+                                         reply_markup=build_menu([], back_button=back_button))
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в handle_show_words_by_pos: {e}")
+        await callback.answer("⚠️ Ошибка при загрузке слов", show_alert=True)
