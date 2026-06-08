@@ -18,13 +18,7 @@ logger = logging.getLogger(__name__)
 
 themes_dict: Dict[str, List[Tuple[str, str]]] = {}
 
-# --- Явная загрузка .env ---
-# Путь к .env теперь должен быть относительно корня проекта
-env_path = Path(__file__).parent.parent.parent / '.env'
-load_dotenv(env_path)
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-if not TOKEN:
-    raise ValueError("Не задан TELEGRAM_BOT_TOKEN в .env файле")
+
 
 
 # --- Константы callback_data ---
@@ -209,23 +203,19 @@ def sort_by_russian_translation(themes_dict: dict) -> dict:
     
     return sorted_themes_dict
 
-PHOTO_LICENSES = {
-    0: "Фото: Wikimedia Commons (CC BY-SA 3.0)",
-    1: "Фото: A.Savin, Wikimedia Commons (CC BY-SA 4.0)",
-    2: " ",  
-    3: "Фото: ttelegraf.ru",
-    4: "Фото: Wikimedia Commons (CC BY-SA 3.0)",  
-    5: " ",  
-    6: "Фото: Красная книга ХМАО",
-    7: "Фото: animalzoom.ru",
-    8: "Фото: etosibir.ru",
-    9: "Фото: torummaa.ru",
-    10: "Фото: Яндекс.Фотки",
-    11: "Фото: ugra-tv.ru",
-    12: "Фото: A.Savin, Wikimedia Commons (CC BY-SA 4.0)",  
-    13: "Фото: informugra.ru",
-    15: "Фото: geoglob.ru",
-    16: " ",  
-    17: " ",  
-    18: "Фото: ljplus.ru"
-}
+all_themes_list = sorted(set([
+    "Животный мир",
+    "Природа, Погода, Время",
+    "Человек и Семья",
+    "Жилище и Быт",
+    "Охота и Рыбалка",
+    "Еда и Вкусы",
+    "Сказочные существа",
+    "Части тела и Внешность",
+    "Музыка и Музыкальные инструменты",
+    "Чувства и Настроение",
+    "Действия (Что делаем?)",
+    "Какой? Какая? Как? (Признаки)",
+    "Сколько? (Числа и счёт)",
+    "Слова-помощники"
+]))
